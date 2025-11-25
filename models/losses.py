@@ -101,3 +101,20 @@ class ACTLossHead(nn.Module):
 
         return new_carry, lm_loss + 0.5 * (q_halt_loss + q_continue_loss), metrics, detached_outputs, new_carry.halted.all()
 
+
+class FlowMatchingLossHead(nn.Module):
+    def __init__(self, model: nn.Module, **kwargs):
+        super().__init__()
+        self.model = model
+        
+    def initial_carry(self, *args, **kwargs):
+        return self.model.initial_carry(*args, **kwargs)  # type: ignore
+
+    def forward(
+        self,
+        return_keys: Sequence[str],
+        # Model args
+        **model_kwargs,
+    ) -> Tuple[Any, torch.Tensor, Dict[str, torch.Tensor], Optional[Dict[str, torch.Tensor]], torch.Tensor]:
+        return self.model(return_keys=return_keys, **model_kwargs)
+
