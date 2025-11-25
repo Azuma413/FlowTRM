@@ -13,7 +13,7 @@ def train():
     config = {
         "batch_size": 16,
         "lr": 1e-4,
-        "epochs": 10,
+        "epochs": 500,
         "device": "cuda" if torch.cuda.is_available() else "cpu",
         
         # Model config
@@ -32,6 +32,9 @@ def train():
     # Setup
     device = config["device"]
     print(f"Using device: {device}")
+
+    # WandB
+    wandb.init(project="flowtrm-pusht", config=config)
     
     # Model
     model = PushT_RF_TRM(config)
@@ -70,12 +73,21 @@ def train():
             total_loss += loss.item()
             pbar.set_postfix({"loss": loss.item()})
             
-        print(f"Epoch {epoch+1} Loss: {total_loss / len(train_loader)}")
+            wandb.log({
+                "train/loss": loss.item(),
+                "epoch": epoch + 1
+            })
+            
+        avg_loss = total_loss / len(train_loader)
+        print(f"Epoch {epoch+1} Loss: {avg_loss}")
+        wandb.log({"train/epoch_loss": avg_loss, "epoch": epoch + 1})
         
     # Save
     os.makedirs("checkpoints/pusht", exist_ok=True)
     torch.save(model.state_dict(), "checkpoints/pusht/model_final.pth")
+    torch.save(model.state_dict(), "checkpoints/pusht/model_final.pth")
     print("Training finished.")
+    wandb.finish()
 
 if __name__ == "__main__":
     train()
