@@ -1,12 +1,10 @@
 from typing import Tuple, List, Dict, Optional
-from dataclasses import dataclass
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from pydantic import BaseModel
 
 from models.layers import CastedLinear
-from models.recursive_reasoning.rf_trm import RF_TRM_Net, RF_TRM_Config, RF_TRM_Carry, RF_TRM_InnerCarry
+from models.recursive_reasoning.rf_trm import RF_TRM_Net, RF_TRM_Config
 from models.vision import ResNet18Encoder
 
 class PushT_RF_TRM_Config(RF_TRM_Config):
@@ -15,7 +13,7 @@ class PushT_RF_TRM_Config(RF_TRM_Config):
     prop_dim: int = 2 # Agent pos (x, y)
     image_size: int = 96
     
-    # Legacy fields (not used for PushT but required by base class)
+    # Legacy fields (required by base class but unused)
     seq_len: int = 0
     vocab_size: int = 0
     num_puzzle_identifiers: int = 0
@@ -49,9 +47,6 @@ class PushT_RF_TRM(nn.Module):
             CastedLinear(self.config.obs_dim // 2, self.config.obs_dim // 2, bias=True)
         )
         
-        # Fusion: We concatenate vision and prop embeddings -> obs_dim
-        # obs_dim must match config.obs_dim
-        
         # Core Network
         self.net = RF_TRM_Net(self.config)
         
@@ -72,35 +67,32 @@ class PushT_RF_TRM(nn.Module):
         obs_x = torch.cat([img_emb, prop_emb], dim=-1) # (B, obs_dim)
         return obs_x
 
-    def initial_carry(self, batch: Dict[str, torch.Tensor]):
-        # Placeholder for compatibility with pretrain.py loop if needed
-        # But for PushT we might write a custom loop.
-        # If we use pretrain.py, we need this.
-        batch_size = batch["image"].shape[0]
-        return RF_TRM_Carry(
-            inner_carry=RF_TRM_InnerCarry(z=torch.empty(0)),
-            steps=torch.zeros(batch_size, dtype=torch.int32),
-            halted=torch.zeros(batch_size, dtype=torch.bool),
-            current_data={k: torch.empty_like(v) for k, v in batch.items() if v.numel() > 0}
-        )
-
-    def forward(self, carry: RF_TRM_Carry, batch: Dict[str, torch.Tensor], return_keys=None):
-        # batch keys: "image", "agent_pos", "action" (for training)
+    def forward(self, batch: Dict[str, torch.Tensor]) -> Tuple[torch.Tensor, Dict[str, torch.Tensor]]:
+        """
+        Training forward pass.
+        Returns: loss, metrics
+        """
+        images = batch["image"]
+        agent_pos = batch["agent_pos"]
+        actions = batch["action"] # (B, chunk_len, action_dim)
         
+        obs_x = self.get_obs_embedding(images, agent_pos)
+        loss = self.training_step(obs_x, actions)
+        
+        return loss, {"loss": loss.detach()}
+
+    def predict(self, batch: Dict[str, torch.Tensor]) -> Dict[str, torch.Tensor]:
+        """
+        Inference forward pass.
+        Returns: predictions dict
+        """
         images = batch["image"]
         agent_pos = batch["agent_pos"]
         
         obs_x = self.get_obs_embedding(images, agent_pos)
+        y_pred = self.inference(obs_x)
         
-        if self.training:
-            actions = batch["action"] # (B, chunk_len, action_dim)
-            loss = self.training_step(obs_x, actions)
-            metrics = {"loss": loss.detach()}
-            return carry, loss, metrics, {}, True
-        else:
-            y_pred = self.inference(obs_x)
-            preds = {"action": y_pred}
-            return carry, torch.tensor(0.0), {}, preds, True
+        return {"action": y_pred}
 
     def training_step(self, obs_x, y_1):
         # Unrolled Flow Matching

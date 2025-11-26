@@ -65,8 +65,7 @@ def run_eval_episode(model, env, stats, device, max_steps=300, exec_steps=8):
         
         # Inference
         with torch.no_grad():
-            carry = model.initial_carry(batch)
-            carry, _, _, preds, _ = model(carry, batch)
+            preds = model.predict(batch)
             action_chunk = preds["action"] # (1, chunk_len, 2)
             
         # Execute chunk
