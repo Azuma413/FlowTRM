@@ -36,6 +36,7 @@ class TrainConfig:
     num_heads: int = 8
     expansion: float = 4.0
     forward_dtype: str = "float32"
+    n_obs_steps: int = 2
     
     # Evaluation & Logging
     eval_freq_steps: int = 1000
@@ -72,7 +73,8 @@ def setup_training(config: TrainConfig) -> Tuple[PushT_RF_TRM, torch.optim.Optim
         split="train",
         image_size=config.image_size,
         chunk_len=config.chunk_len,
-        action_dim=config.action_dim
+        action_dim=config.action_dim,
+        n_obs_steps=config.n_obs_steps
     )
     train_loader = DataLoader(
         train_dataset, 
@@ -152,7 +154,8 @@ def evaluate(
     frames, timeout = run_eval_episode(
         model, env, stats, config.device, 
         max_steps=config.eval_max_steps, 
-        exec_steps=config.eval_exec_steps
+        exec_steps=config.eval_exec_steps,
+        n_obs_steps=config.n_obs_steps
     )
     
     # Log video

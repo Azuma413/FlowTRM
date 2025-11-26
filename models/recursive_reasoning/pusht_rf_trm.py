@@ -27,6 +27,7 @@ class PushT_RF_TRM_Config(RF_TRM_Config):
     obs_dim: int = 512 # Combined embedding size
     chunk_len: int = 16
     num_steps: int = 16
+    n_obs_steps: int = 2 # Number of observation steps to condition on
 
 class PushT_RF_TRM(nn.Module):
     def __init__(self, config_dict: dict):
@@ -47,6 +48,14 @@ class PushT_RF_TRM(nn.Module):
             CastedLinear(self.config.obs_dim // 2, self.config.obs_dim // 2, bias=True)
         )
         
+        # Projection for history
+        # We concatenate features from n_obs_steps: (B, n_obs_steps * obs_dim) -> (B, obs_dim)
+        self.history_projection = CastedLinear(
+            self.config.n_obs_steps * self.config.obs_dim, 
+            self.config.obs_dim, 
+            bias=True
+        )
+        
         # Core Network
         self.net = RF_TRM_Net(self.config)
         
@@ -57,14 +66,30 @@ class PushT_RF_TRM(nn.Module):
         return self.z_init.expand(batch_size, -1, -1).to(device).to(self.forward_dtype)
 
     def get_obs_embedding(self, images, agent_pos):
-        # images: (B, C, H, W)
-        # agent_pos: (B, prop_dim)
+        # images: (B, T, C, H, W)
+        # agent_pos: (B, T, prop_dim)
         
-        img_emb = self.vision_encoder(images) # (B, obs_dim//2)
-        prop_emb = self.prop_encoder(agent_pos) # (B, obs_dim//2)
+        B, T, C, H, W = images.shape
+        
+        # Flatten B and T for encoder
+        images_flat = images.view(B * T, C, H, W)
+        agent_pos_flat = agent_pos.view(B * T, -1)
+        
+        img_emb = self.vision_encoder(images_flat) # (B*T, obs_dim//2)
+        prop_emb = self.prop_encoder(agent_pos_flat) # (B*T, obs_dim//2)
         
         # Concatenate
-        obs_x = torch.cat([img_emb, prop_emb], dim=-1) # (B, obs_dim)
+        obs_flat = torch.cat([img_emb, prop_emb], dim=-1) # (B*T, obs_dim)
+        
+        # Reshape back to (B, T, obs_dim)
+        obs_seq = obs_flat.view(B, T, -1)
+        
+        # Flatten T into feature dim -> (B, T * obs_dim)
+        obs_cat = obs_seq.view(B, -1)
+        
+        # Project back to obs_dim
+        obs_x = self.history_projection(obs_cat) # (B, obs_dim)
+        
         return obs_x
 
     def forward(self, batch: Dict[str, torch.Tensor]) -> Tuple[torch.Tensor, Dict[str, torch.Tensor]]:

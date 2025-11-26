@@ -3,11 +3,12 @@ from torch.utils.data import Dataset
 from lerobot.datasets.lerobot_dataset import LeRobotDataset
 
 class PushTDataset(Dataset):
-    def __init__(self, root_dir: str, split: str = "train", image_size: int = 96, chunk_len: int = 16, action_dim: int = 2):
+    def __init__(self, root_dir: str, split: str = "train", image_size: int = 96, chunk_len: int = 16, action_dim: int = 2, n_obs_steps: int = 2):
         self.split = split
         self.image_size = image_size
         self.chunk_len = chunk_len
         self.action_dim = action_dim
+        self.n_obs_steps = n_obs_steps
         
         # Load LeRobot Dataset
         self.dataset = LeRobotDataset("lerobot/pusht")
@@ -29,19 +30,65 @@ class PushTDataset(Dataset):
         return data
 
     def __getitem__(self, idx: int):
-        # Get start item for observation
-        item = self.dataset[idx]
+        # Observation History
+        # We need to fetch n_obs_steps observations ending at idx
+        # i.e., [idx - n_obs_steps + 1, ..., idx]
         
-        # Image & Agent Pos (LeRobotDataset returns normalized values if stats are available)
-        # However, to be safe and consistent with our manual action normalization, 
-        # we should verify if LeRobotDataset normalizes automatically. 
-        # By default, LeRobotDataset returns raw data unless a transform is applied.
-        # But here we assume we need to normalize manually or rely on what's returned.
-        # Given the previous code's assumption, we will trust item values for obs 
-        # but normalize actions manually as we fetch them in bulk.
+        start_obs_idx = idx - self.n_obs_steps + 1
         
-        image = item["observation.image"].float()
-        agent_pos = item["observation.state"].float()
+        # Handle indices < 0 or crossing episode boundaries
+        # For simplicity, we'll just clamp to the start of the current episode
+        # But LeRobotDataset is flat, so we need to be careful.
+        # Actually, let's just fetch the indices and then fix them up.
+        
+        indices = list(range(start_obs_idx, idx + 1))
+        
+        # Get current episode index to check boundaries
+        current_episode = self.dataset[idx]["episode_index"]
+        
+        valid_indices = []
+        for i in indices:
+            if i < 0:
+                valid_indices.append(idx) # Placeholder, will be replaced
+            elif self.dataset[i]["episode_index"] != current_episode:
+                # If we crossed into previous episode, repeat the first valid frame of THIS episode
+                # We can find the start of this episode, but for efficiency, 
+                # let's just use the current index or the first valid index we found?
+                # A better approach:
+                # Find the first index in 'indices' that belongs to the current episode.
+                # Then pad everything before it with that first index.
+                valid_indices.append(i) # Temporarily add, we'll filter later
+            else:
+                valid_indices.append(i)
+                
+        # Refine indices
+        # 1. Identify valid indices (same episode)
+        actual_indices = []
+        first_valid_idx = -1
+        
+        for i in indices:
+            if i >= 0 and self.dataset[i]["episode_index"] == current_episode:
+                actual_indices.append(i)
+                if first_valid_idx == -1:
+                    first_valid_idx = i
+            else:
+                actual_indices.append(-1) # Mark as invalid
+                
+        # 2. Replace invalid with first_valid_idx
+        final_indices = [i if i != -1 else first_valid_idx for i in actual_indices]
+        
+        # Fetch observations
+        images = []
+        agent_poses = []
+        
+        for i in final_indices:
+            item = self.dataset[i]
+            images.append(item["observation.image"].float())
+            agent_poses.append(item["observation.state"].float())
+            
+        # Stack -> (T, ...)
+        image = torch.stack(images) # (n_obs_steps, C, H, W)
+        agent_pos = torch.stack(agent_poses) # (n_obs_steps, D)
         
         # Action Chunking
         start_idx = idx
@@ -54,10 +101,9 @@ class PushTDataset(Dataset):
         # Normalize actions
         norm_actions = self._normalize(raw_actions, self.stats["action"])
         
-        # Handle Episode Boundaries
+        # Handle Episode Boundaries for Actions
         episode_indices = self.dataset.hf_dataset[start_idx : end_idx]["episode_index"]
         episode_indices = torch.tensor(episode_indices)
-        current_episode = item["episode_index"]
         
         # Mask out actions from different episodes
         mask = episode_indices != current_episode
