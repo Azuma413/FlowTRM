@@ -39,6 +39,57 @@ def unnormalize_action(action, stats):
         action = (action + 1) / 2 * (max_val - min_val) + min_val
     return action.squeeze(0).cpu().numpy()
 
+def run_eval_episode(model, env, stats, device, max_steps=300, exec_steps=8):
+    obs, info = env.reset()
+    done = False
+    frames = []
+    step = 0
+    
+    action_stats = stats["action"]
+    state_stats = stats["observation.state"]
+    
+    while not done and step < max_steps:
+        # Prepare input
+        # Obs: pixels (96, 96, 3), agent_pos (2,)
+        image = obs["pixels"] # (96, 96, 3)
+        agent_pos = obs["agent_pos"] # (2,)
+        
+        # Normalize
+        img_tensor = normalize_image(image).to(device)
+        state_tensor = normalize_state(agent_pos, state_stats).to(device)
+        
+        batch = {
+            "image": img_tensor,
+            "agent_pos": state_tensor
+        }
+        
+        # Inference
+        with torch.no_grad():
+            carry = model.initial_carry(batch)
+            carry, _, _, preds, _ = model(carry, batch)
+            action_chunk = preds["action"] # (1, chunk_len, 2)
+            
+        # Execute chunk
+        for k in range(exec_steps):
+            if step >= max_steps: break
+            
+            action = action_chunk[:, k, :] # (1, 2)
+            action_np = unnormalize_action(action, action_stats)
+            
+            # Step env
+            obs, reward, terminated, truncated, info = env.step(action_np)
+            done = terminated or truncated
+            
+            # Render
+            frame = env.render()
+            frames.append(frame)
+            
+            step += 1
+            
+            if done: break
+            
+    return frames, step >= max_steps # Return frames and whether it timed out (success metric depends on env)
+
 def evaluate_gym():
     # Config
     config = {
@@ -72,8 +123,7 @@ def evaluate_gym():
     
     # Load Stats
     print("Loading stats...")
-    stats = get_stats()["observation.state"]
-    action_stats = get_stats()["action"]
+    stats = get_stats()
     
     # Load Model
     model = PushT_RF_TRM(config)
@@ -91,65 +141,13 @@ def evaluate_gym():
     
     # Loop
     for episode in range(config["num_episodes"]):
-        obs, info = env.reset()
-        done = False
-        frames = []
-        step = 0
-        
-        pbar = tqdm(total=config["max_steps"], desc=f"Episode {episode+1}")
-        
-        while not done and step < config["max_steps"]:
-            # Prepare input
-            # Obs: pixels (96, 96, 3), agent_pos (2,)
-            image = obs["pixels"] # (96, 96, 3)
-            agent_pos = obs["agent_pos"] # (2,)
-            
-            # Normalize
-            img_tensor = normalize_image(image).to(device)
-            state_tensor = normalize_state(agent_pos, stats).to(device)
-            
-            batch = {
-                "image": img_tensor,
-                "agent_pos": state_tensor
-            }
-            
-            # Inference
-            with torch.no_grad():
-                carry = model.initial_carry(batch)
-                carry, _, _, preds, _ = model(carry, batch)
-                action_chunk = preds["action"] # (1, chunk_len, 2)
-                
-            # Execute chunk
-            # Unnormalize actions
-            # We need to unnormalize the whole chunk or just what we execute
-            
-            for k in range(config["exec_steps"]):
-                if step >= config["max_steps"]: break
-                
-                action = action_chunk[:, k, :] # (1, 2)
-                action_np = unnormalize_action(action, action_stats)
-                
-                # Step env
-                obs, reward, terminated, truncated, info = env.step(action_np)
-                done = terminated or truncated
-                
-                # Render
-                frame = env.render()
-                frames.append(frame)
-                
-                step += 1
-                pbar.update(1)
-                
-                if done: break
-                
-        pbar.close()
+        print(f"Episode {episode+1}")
+        frames, timeout = run_eval_episode(model, env, stats, device, config["max_steps"], config["exec_steps"])
         
         # Save video
         save_path = f"outputs/pusht_eval_ep{episode}.mp4"
         os.makedirs("outputs", exist_ok=True)
         
-        # Use cv2 or imageio to save video
-        # frames is list of (H, W, 3)
         if len(frames) > 0:
             height, width, layers = frames[0].shape
             fourcc = cv2.VideoWriter_fourcc(*'mp4v')

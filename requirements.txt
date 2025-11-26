@@ -19,3 +19,4 @@ huggingface_hub
 numba
 triton
 torchvision
+moviepy
