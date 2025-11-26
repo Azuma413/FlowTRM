@@ -56,15 +56,10 @@ class PushT_RF_TRM(nn.Module):
             bias=True
         )
         
-        # Core Network
-        self.net = RF_TRM_Net(self.config)
+        # Core Network (Delegated to Inner)
+        from models.recursive_reasoning.rf_trm import RF_TRM_Inner
+        self.inner = RF_TRM_Inner(self.config)
         
-        # Learnable initial z
-        self.z_init = nn.Parameter(torch.randn(1, self.config.chunk_len, self.config.hidden_size) * 0.02)
-        
-    def initialize_latent(self, batch_size, device):
-        return self.z_init.expand(batch_size, -1, -1).to(device).to(self.forward_dtype)
-
     def get_obs_embedding(self, images, agent_pos):
         # images: (B, T, C, H, W)
         # agent_pos: (B, T, prop_dim)
@@ -102,7 +97,9 @@ class PushT_RF_TRM(nn.Module):
         actions = batch["action"] # (B, chunk_len, action_dim)
         
         obs_x = self.get_obs_embedding(images, agent_pos)
-        loss = self.training_step(obs_x, actions)
+        
+        # Delegate to Inner
+        loss = self.inner.training_step(obs_x, actions)
         
         return loss, {"loss": loss.detach()}
 
@@ -115,58 +112,8 @@ class PushT_RF_TRM(nn.Module):
         agent_pos = batch["agent_pos"]
         
         obs_x = self.get_obs_embedding(images, agent_pos)
-        y_pred = self.inference(obs_x)
+        
+        # Delegate to Inner
+        y_pred = self.inner.inference(obs_x)
         
         return {"action": y_pred}
-
-    def training_step(self, obs_x, y_1):
-        # Unrolled Flow Matching
-        B = obs_x.shape[0]
-        device = obs_x.device
-        
-        y_0 = torch.randn_like(y_1)
-        z = self.initialize_latent(B, device)
-        
-        total_loss = 0
-        num_steps = self.config.num_steps
-        
-        for step in range(num_steps):
-            t = step / num_steps
-            
-            # Target velocity (Rectified Flow: y_1 - y_0)
-            target_v = y_1 - y_0
-            
-            # Input y_t (Conditional Flow Matching)
-            t_val = t
-            y_t_ideal = (1 - t_val) * y_0 + t_val * y_1
-            
-            # Predict
-            v_pred, z_next = self.net(obs_x, y_t_ideal, z, t_val)
-            
-            # Loss
-            loss_step = F.mse_loss(v_pred, target_v)
-            total_loss += loss_step
-            
-            # Update z (Recurrent)
-            z = z_next
-            
-        return total_loss / num_steps
-
-    def inference(self, obs_x):
-        B = obs_x.shape[0]
-        device = obs_x.device
-        
-        y = torch.randn(B, self.config.chunk_len, self.config.action_dim, device=device, dtype=self.forward_dtype)
-        z = self.initialize_latent(B, device)
-        
-        dt = 1.0 / self.config.num_steps
-        
-        for step in range(self.config.num_steps):
-            t = step / self.config.num_steps
-            
-            v_pred, z_next = self.net(obs_x, y, z, t)
-            
-            y = y + v_pred * dt
-            z = z_next
-            
-        return y

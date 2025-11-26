@@ -90,6 +90,9 @@ class PushTDataset(Dataset):
         image = torch.stack(images) # (n_obs_steps, C, H, W)
         agent_pos = torch.stack(agent_poses) # (n_obs_steps, D)
         
+        # Normalize agent_pos
+        agent_pos = self._normalize(agent_pos, self.stats["observation.state"])
+        
         # Action Chunking
         start_idx = idx
         end_idx = min(idx + self.chunk_len, len(self.dataset))
