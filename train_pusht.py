@@ -24,6 +24,7 @@ class TrainConfig:
     epochs: int = 500
     device: str = "cuda" if torch.cuda.is_available() else "cpu"
     seed: int = 42
+    max_grad_norm: float = 1.0
     
     # Model
     action_dim: int = 2
@@ -113,6 +114,10 @@ def train_epoch(
         # Backward
         optimizer.zero_grad()
         loss.backward()
+        
+        # Gradient Clipping
+        grad_norm = torch.nn.utils.clip_grad_norm_(model.parameters(), config.max_grad_norm)
+        
         optimizer.step()
         
         total_loss += loss.item()
@@ -120,6 +125,7 @@ def train_epoch(
         
         wandb.log({
             "train/loss": loss.item(),
+            "train/grad_norm": grad_norm.item(),
             "epoch": epoch + 1,
             "global_step": global_step
         })

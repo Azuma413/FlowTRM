@@ -14,6 +14,13 @@ class PushTDataset(Dataset):
         self.dataset = LeRobotDataset("lerobot/pusht")
         self.stats = self.dataset.meta.stats
         
+        # ImageNet Normalization
+        from torchvision import transforms
+        self.normalize_image = transforms.Normalize(
+            mean=[0.485, 0.456, 0.406],
+            std=[0.229, 0.224, 0.225]
+        )
+        
     def __len__(self):
         return len(self.dataset)
     
@@ -88,6 +95,9 @@ class PushTDataset(Dataset):
             
         # Stack -> (T, ...)
         image = torch.stack(images) # (n_obs_steps, C, H, W)
+        
+        # Normalize Image (ImageNet stats)
+        image = self.normalize_image(image)
         agent_pos = torch.stack(agent_poses) # (n_obs_steps, D)
         
         # Normalize agent_pos

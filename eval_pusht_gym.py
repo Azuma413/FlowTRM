@@ -19,6 +19,15 @@ def normalize_image(image):
     # image: (H, W, C) uint8 -> (1, C, H, W) float32 normalized
     image = torch.from_numpy(image).float() / 255.0
     image = image.permute(2, 0, 1).unsqueeze(0) # (1, C, H, W)
+    
+    # ImageNet Normalization
+    from torchvision import transforms
+    normalize = transforms.Normalize(
+        mean=[0.485, 0.456, 0.406],
+        std=[0.229, 0.224, 0.225]
+    )
+    image = normalize(image)
+    
     return image
 
 def normalize_state(state, stats):
