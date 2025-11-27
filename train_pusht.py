@@ -19,7 +19,7 @@ from eval_pusht_gym import run_eval_episode, get_stats
 @dataclass
 class TrainConfig:
     # Training
-    batch_size: int = 16
+    batch_size: int = 64
     lr: float = 1e-4
     epochs: int = 500
     device: str = "cuda" if torch.cuda.is_available() else "cpu"

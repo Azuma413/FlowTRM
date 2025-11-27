@@ -19,8 +19,8 @@ class PushTDataset(Dataset):
     
     def _normalize(self, data: torch.Tensor, stats: dict) -> torch.Tensor:
         if "min" in stats and "max" in stats:
-            min_val = torch.tensor(stats["min"])
-            max_val = torch.tensor(stats["max"])
+            min_val = torch.tensor(stats["min"], dtype=data.dtype)
+            max_val = torch.tensor(stats["max"], dtype=data.dtype)
             # Normalize to [-1, 1]
             return 2 * (data - min_val) / (max_val - min_val) - 1
         elif "mean" in stats and "std" in stats:
