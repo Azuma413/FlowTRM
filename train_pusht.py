@@ -1,33 +1,25 @@
 import os
 import warnings
 import logging
-
 # Suppress specific warnings
 warnings.filterwarnings("ignore", message=".*pkg_resources is deprecated.*")
 warnings.filterwarnings("ignore", message=".*video decoding and encoding capabilities of torchvision are deprecated.*")
-
 # Suppress root logger warning about torchcodec
 class TorchCodecFilter(logging.Filter):
     def filter(self, record):
         return "'torchcodec' is not available" not in record.getMessage()
-
 logging.getLogger().addFilter(TorchCodecFilter())
-
 import random
 from dataclasses import dataclass, asdict
-from typing import Optional, Dict, Any, Tuple, List
+from typing import Optional, Any, Tuple
 import argparse
 from omegaconf import OmegaConf
-
 import torch
-import torch.nn as nn
 from torch.utils.data import DataLoader
 from tqdm import tqdm
 import wandb
 import gymnasium as gym
-import gym_pusht  # Register PushT environments
 import numpy as np
-
 from models.pusht_model import PushTModel
 from dataset.pusht_dataset import PushTDataset
 from eval_pusht_gym import run_eval_episode, get_dataset_info, setup_normalization
@@ -41,7 +33,6 @@ class TrainConfig:
     device: str = "cuda" if torch.cuda.is_available() else "cpu"
     seed: int = 42
     max_grad_norm: float = 1.0
-    
     # Model
     action_dim: int = 2
     prop_dim: int = 2
@@ -54,12 +45,13 @@ class TrainConfig:
     expansion: float = 4.0
     forward_dtype: str = "float32"
     n_obs_steps: int = 2
-    
     # Evaluation & Logging
-    eval_freq_steps: int = 1000
+    eval_interval: int = 10
+    eval_unit: str = "epochs"
     eval_max_steps: int = 300
     eval_exec_steps: int = 8
-    save_freq_steps: int = 5000
+    save_interval: int = 50
+    save_unit: str = "epochs"
     project_name: str = "flowtrm-pusht"
     checkpoint_dir: str = "checkpoints/pusht"
 
@@ -71,20 +63,11 @@ def set_seed(seed: int):
         torch.cuda.manual_seed_all(seed)
 
 def setup_training(config: TrainConfig) -> Tuple[PushTModel, torch.optim.Optimizer, DataLoader, gym.Env]:
-    # Device
     print(f"Using device: {config.device}")
-    
-    # WandB
     wandb.init(project=config.project_name, config=asdict(config))
-    
-    # Model
     model = PushTModel(asdict(config))
     model.to(config.device)
-    
-    # Optimizer
     optimizer = torch.optim.AdamW(model.parameters(), lr=config.lr)
-    
-    # Data
     train_dataset = PushTDataset(
         "lerobot/pusht", 
         split="train",
@@ -100,10 +83,7 @@ def setup_training(config: TrainConfig) -> Tuple[PushTModel, torch.optim.Optimiz
         num_workers=4,
         pin_memory=True
     )
-    
-    # Eval Env
     eval_env = gym.make("gym_pusht/PushT-v0", obs_type="pixels_agent_pos", render_mode="rgb_array")
-    
     return model, optimizer, train_loader, eval_env
 
 def train_epoch(
@@ -120,48 +100,30 @@ def train_epoch(
     model.train()
     pbar = tqdm(loader, desc=f"Epoch {epoch+1}/{config.epochs}")
     total_loss = 0.0
-    
     for batch in pbar:
-        # Move to device
         batch = {k: v.to(config.device) for k, v in batch.items()}
-        
-        # Forward
         loss, metrics = model(batch)
-        
-        # Backward
         optimizer.zero_grad()
         loss.backward()
-        
-        # Gradient Clipping
         grad_norm = torch.nn.utils.clip_grad_norm_(model.parameters(), config.max_grad_norm)
-        
         optimizer.step()
-        
         total_loss += loss.item()
         pbar.set_postfix({"loss": loss.item()})
-        
         wandb.log({
             "train/loss": loss.item(),
             "train/grad_norm": grad_norm.item(),
             "epoch": epoch + 1,
             "global_step": global_step
         })
-        
-        # Evaluation
-        if global_step % config.eval_freq_steps == 0 and global_step > 0:
+        if config.eval_unit == "steps" and global_step % config.eval_interval == 0 and global_step > 0:
             evaluate(model, eval_env, normalize, unnormalize, config, global_step)
             model.train()
-            
-        # Checkpoint
-        if global_step % config.save_freq_steps == 0 and global_step > 0:
+        if config.save_unit == "steps" and global_step % config.save_interval == 0 and global_step > 0:
             save_checkpoint(model, config, global_step)
-        
         global_step += 1
-        
     avg_loss = total_loss / len(loader)
     print(f"Epoch {epoch+1} Loss: {avg_loss}")
     wandb.log({"train/epoch_loss": avg_loss, "epoch": epoch + 1})
-    
     return global_step
 
 def evaluate(
@@ -174,15 +136,12 @@ def evaluate(
 ):
     model.eval()
     print(f"\nRunning evaluation at step {global_step}...")
-    
     frames, timeout = run_eval_episode(
         model, env, normalize, unnormalize, config.device, 
         max_steps=config.eval_max_steps, 
         exec_steps=config.eval_exec_steps,
         n_obs_steps=config.n_obs_steps
     )
-    
-    # Log video
     if len(frames) > 0:
         frames_np = np.array(frames) # (T, H, W, C)
         frames_ch = frames_np.transpose(0, 3, 1, 2) # (T, C, H, W)
@@ -197,7 +156,6 @@ def save_checkpoint(model: PushTModel, config: TrainConfig, global_step: Optiona
         save_path = os.path.join(config.checkpoint_dir, f"model_step_{global_step}.pth")
     else:
         save_path = os.path.join(config.checkpoint_dir, "model_final.pth")
-        
     torch.save(model.state_dict(), save_path)
     print(f"\nSaved checkpoint to {save_path}")
 
@@ -205,45 +163,35 @@ def main():
     parser = argparse.ArgumentParser(description="Train PushT Model")
     parser.add_argument("--config", type=str, default="config/config.yaml", help="Path to configuration file")
     args = parser.parse_args()
-
-    # Load default config from dataclass
     base_config = OmegaConf.structured(TrainConfig)
-    
-    # Load config from file
     if os.path.exists(args.config):
         file_config = OmegaConf.load(args.config)
-        # Merge base config with file config
         config_node = OmegaConf.merge(base_config, file_config)
-        # Convert back to TrainConfig object
         config = OmegaConf.to_object(config_node)
         print(f"Loaded config from {args.config}")
     else:
         print(f"Config file {args.config} not found. Using defaults.")
         config = TrainConfig()
-
     set_seed(config.seed)
-    
     model, optimizer, train_loader, eval_env = setup_training(config)
-    
-    # Setup normalization for eval
     stats, features = get_dataset_info()
     normalize, unnormalize = setup_normalization(stats, features)
-    
     global_step = 0
-    
     try:
         for epoch in range(config.epochs):
             global_step = train_epoch(
                 model, optimizer, train_loader, config, epoch, global_step, eval_env, normalize, unnormalize
             )
-            
+            if config.eval_unit == "epochs" and (epoch + 1) % config.eval_interval == 0:
+                evaluate(model, eval_env, normalize, unnormalize, config, global_step)
+                model.train()
+            if config.save_unit == "epochs" and (epoch + 1) % config.save_interval == 0:
+                save_checkpoint(model, config, global_step)
         save_checkpoint(model, config)
         print("Training finished.")
-        
     except KeyboardInterrupt:
         print("Training interrupted.")
         save_checkpoint(model, config, global_step)
-        
     finally:
         wandb.finish()
         eval_env.close()

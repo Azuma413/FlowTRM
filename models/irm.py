@@ -70,26 +70,18 @@ class IterativeRefinementModel(nn.Module):
         
         total_loss = 0
         
-        # --- 修正点: 初期推測の初期化戦略 ---
-        # 確率的に「Cold Start (ゼロ)」か「Warm Start (シフト済みGT + ノイズ)」を選ぶ
-        # これにより、推論時の両方のケースに対応できる
+        # ユーザーの要望により、Cold Start (ゼロ) は使用せず、常にWarm Startとする
+        # Warm Start Simulation: 
+        # 正解アクションを1つずらして、前回の推論結果を模倣する
+        # (端の処理は簡易的に0埋めや複製で)
+        shifted_action = target_action.clone()
+        shifted_action[:, :-1, :] = target_action[:, 1:, :] # 左シフト
+        shifted_action[:, -1, :] = target_action[:, -1, :] # 末尾複製
         
-        # 例: 50%の確率でWarm Startシミュレーションを行う
-        if torch.rand(1).item() < 0.5:
-            # Cold Start: MIP論文通りゼロから 
-            current_guess = torch.zeros_like(target_action)
-        else:
-            # Warm Start Simulation: 
-            # 正解アクションを1つずらして、前回の推論結果を模倣する
-            # (端の処理は簡易的に0埋めや複製で)
-            shifted_action = target_action.clone()
-            shifted_action[:, :-1, :] = target_action[:, 1:, :] # 左シフト
-            shifted_action[:, -1, :] = target_action[:, -1, :] # 末尾複製
-            
-            # さらに強めのノイズを乗せて「不完全な前回予測」を作る
-            # ノイズレベルはtrain_noise_stdより少し大きくても良い
-            warm_noise = torch.randn_like(shifted_action) * self.train_noise_std
-            current_guess = shifted_action + warm_noise
+        # さらに強めのノイズを乗せて「不完全な前回予測」を作る
+        # ノイズレベルはtrain_noise_stdより少し大きくても良い
+        warm_noise = torch.randn_like(shifted_action) * self.train_noise_std
+        current_guess = shifted_action + warm_noise
         
         # 学習するRefinementステップ数 (例: 2ステップ)
         # 論文では2ステップで十分とされている [cite: 100]

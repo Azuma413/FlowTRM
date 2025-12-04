@@ -67,7 +67,6 @@ def run_eval_episode(model, env, normalize, unnormalize, device, max_steps=300, 
     done = False
     frames = []
     step = 0
-    
     # History buffers
     obs_history = {
         "image": deque(maxlen=n_obs_steps),
@@ -78,11 +77,9 @@ def run_eval_episode(model, env, normalize, unnormalize, device, max_steps=300, 
         # Prepare input
         image = obs["pixels"] # (96, 96, 3)
         agent_pos = obs["agent_pos"] # (2,)
-        
         # To Tensor
         img_tensor = torch.from_numpy(image).float().permute(2, 0, 1) / 255.0 # (3, 96, 96) [0,1]
         state_tensor = torch.from_numpy(agent_pos).float() # (2,)
-        
         # Update history
         if len(obs_history["image"]) == 0:
             for _ in range(n_obs_steps):
@@ -91,40 +88,20 @@ def run_eval_episode(model, env, normalize, unnormalize, device, max_steps=300, 
         else:
             obs_history["image"].append(img_tensor)
             obs_history["agent_pos"].append(state_tensor)
-            
         # Stack history -> (T, ...)
         img_hist = torch.stack(list(obs_history["image"])) # (T, C, H, W)
         pos_hist = torch.stack(list(obs_history["agent_pos"])) # (T, D)
-        
-        # Normalize
-        # We need to pass a batch-like dict to normalize.
-        # But normalize expects (B, ...) or (...) depending on implementation.
-        # Our img_hist is (T, C, H, W).
-        # If we treat T as batch, it works.
-        
         batch = {
             "observation.image": img_hist,
             "observation.state": pos_hist
         }
-        
-        # Move to device for normalization if stats are on device?
-        # Normalize buffers are registered buffers, so they need to be on same device as input.
-        # We can move input to device first.
         batch = {k: v.to(device) for k, v in batch.items()}
         normalize.to(device)
-        
         batch = normalize(batch)
-        
-        # Prepare for model
-        # Model expects:
-        # image: (B, T, C, H, W) -> We have (T, C, H, W). Add B=1.
-        # agent_pos: (B, T, D) -> We have (T, D). Add B=1.
-        
         model_input = {
             "image": batch["observation.image"].unsqueeze(0),
             "agent_pos": batch["observation.state"].unsqueeze(0)
         }
-        
         # Inference
         with torch.no_grad():
             preds = model.predict(model_input)
@@ -144,21 +121,13 @@ def run_eval_episode(model, env, normalize, unnormalize, device, max_steps=300, 
         
         for k in range(exec_steps):
             if step >= max_steps: break
-            
             action = action_chunk_np[k] # (2,)
-            
-            # Step env
             obs, reward, terminated, truncated, info = env.step(action)
             done = terminated or truncated
-            
-            # Render
             frame = env.render()
             frames.append(frame)
-            
             step += 1
-            
             if done: break
-            
     return frames, step >= max_steps
 
 def evaluate_gym():

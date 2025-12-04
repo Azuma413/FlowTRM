@@ -20,9 +20,11 @@ forward_dtype: "float32"
 n_obs_steps: 2
 
 # Evaluation & Logging
-eval_freq_steps: 1000
+eval_interval: 1
+eval_unit: "epochs" # "epochs" or "steps"
 eval_max_steps: 300
 eval_exec_steps: 8
-save_freq_steps: 5000
+save_interval: 50
+save_unit: "epochs" # "epochs" or "steps"
 project_name: "flowtrm-pusht"
 checkpoint_dir: "checkpoints/pusht"
