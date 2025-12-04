@@ -42,11 +42,11 @@ def setup_normalization(stats, features_dict):
     }
     
     # Prepare Stats
-    if "observation.image" not in stats:
-        # ImageNet stats
-        mean = torch.tensor([0.485, 0.456, 0.406]).view(3, 1, 1)
-        std = torch.tensor([0.229, 0.224, 0.225]).view(3, 1, 1)
-        stats["observation.image"] = {"mean": mean, "std": std}
+    # Prepare Stats
+    # Force ImageNet stats
+    mean = torch.tensor([0.485, 0.456, 0.406]).view(3, 1, 1)
+    std = torch.tensor([0.229, 0.224, 0.225]).view(3, 1, 1)
+    stats["observation.image"] = {"mean": mean, "std": std}
         
     normalize = Normalize(
         features=features_map,

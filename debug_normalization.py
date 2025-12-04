@@ -1,88 +1,66 @@
 
 import torch
-from lerobot.datasets.lerobot_dataset import LeRobotDataset
-from lerobot.policies.normalize import Normalize, Unnormalize, NormalizationMode
-from lerobot.configs.types import PolicyFeature, FeatureType
+import numpy as np
+from dataset.pusht_dataset import PushTDataset
+from eval_pusht_gym import get_dataset_info, setup_normalization
 
-def check_stats():
-    print("Loading dataset...")
-    dataset = LeRobotDataset("lerobot/pusht")
-    stats = dataset.meta.stats
-    features = dataset.features
-    
-    print("\n--- Stats Keys ---")
-    print(stats.keys())
-    
-    if "observation.image" in stats:
-        print("\n--- Observation Image Stats ---")
-        print(stats["observation.image"])
-    else:
-        print("\nObservation Image Stats NOT found (will use ImageNet default in code)")
-
-    if "action" in stats:
-        print("\n--- Action Stats ---")
-        print(stats["action"])
+def check_changes():
+    print("--- Checking PushTDataset ---")
+    # Initialize dataset (this should trigger the stats overwrite)
+    # We use a small subset or just init to check stats
+    try:
+        ds = PushTDataset(root_dir="lerobot/pusht", split="train")
+        stats = ds.stats
         
-    # Simulate Setup Normalization
-    features_map = {}
-    for key, ft in features.items():
-        dtype_str = ft["dtype"]
-        if dtype_str in ["image", "video"]:
-            f_type = FeatureType.VISUAL
-        else:
-            f_type = FeatureType.STATE
+        if "observation.image" in stats:
+            mean = stats["observation.image"]["mean"]
+            std = stats["observation.image"]["std"]
+            print("PushTDataset observation.image stats:")
+            print(f"Mean: {mean}")
+            print(f"Std: {std}")
             
-        features_map[key] = PolicyFeature(
-            type=f_type,
-            shape=ft["shape"]
-        )
+            expected_mean = torch.tensor([0.485, 0.456, 0.406]).view(3, 1, 1)
+            if torch.allclose(mean, expected_mean, atol=1e-4):
+                print("SUCCESS: PushTDataset is using ImageNet mean.")
+            else:
+                print("FAILURE: PushTDataset is NOT using ImageNet mean.")
+        else:
+            print("FAILURE: observation.image not found in PushTDataset stats.")
+            
+    except Exception as e:
+        print(f"Error checking PushTDataset: {e}")
 
-    norm_map = {
-        "observation.image": NormalizationMode.MEAN_STD,
-        "observation.state": NormalizationMode.MIN_MAX,
-        "action": NormalizationMode.MIN_MAX
-    }
-    
-    # Force ImageNet stats if requested (simulating the fix)
-    # But let's see what happens if we don't force it first (current state)
-    
-    normalize = Normalize(
-        features=features_map,
-        norm_map=norm_map,
-        stats=stats
-    )
-    
-    unnormalize = Unnormalize(
-        features=features_map,
-        norm_map=norm_map,
-        stats=stats
-    )
-    
-    print("\n--- Normalization Check ---")
-    # Create dummy action
-    if "action" in stats:
-        min_val = stats["action"]["min"]
-        max_val = stats["action"]["max"]
-        print(f"Action Min: {min_val}")
-        print(f"Action Max: {max_val}")
+    print("\n--- Checking eval_pusht_gym ---")
+    try:
+        stats, features = get_dataset_info()
+        # setup_normalization modifies stats in place or uses them to create normalize
+        # But wait, setup_normalization in my code takes stats and modifies a local copy or the passed dict?
+        # Let's check the code. It modifies the passed 'stats' dict if I recall correctly, or creates a new one?
+        # In eval_pusht_gym.py:
+        # def setup_normalization(stats, features_dict):
+        #    ...
+        #    stats["observation.image"] = ...
+        #    ...
+        # So it modifies the passed stats object if it's a dict.
         
-        # Test normalization
-        dummy_action = (min_val + max_val) / 2.0
-        batch = {"action": dummy_action.unsqueeze(0)}
-        norm_batch = normalize(batch)
-        print(f"Normalized Action (Midpoint): {norm_batch['action']}")
+        normalize, unnormalize = setup_normalization(stats, features)
         
-        rec_batch = unnormalize(norm_batch)
-        print(f"Reconstructed Action: {rec_batch['action']}")
-        
-        # Test bounds
-        batch_min = {"action": min_val.unsqueeze(0)}
-        norm_min = normalize(batch_min)
-        print(f"Normalized Action (Min): {norm_min['action']}")
-        
-        batch_max = {"action": max_val.unsqueeze(0)}
-        norm_max = normalize(batch_max)
-        print(f"Normalized Action (Max): {norm_max['action']}")
+        # Check if stats were updated
+        if "observation.image" in stats:
+            mean = stats["observation.image"]["mean"]
+            print("eval_pusht_gym stats after setup_normalization:")
+            print(f"Mean: {mean}")
+            
+            expected_mean = torch.tensor([0.485, 0.456, 0.406]).view(3, 1, 1)
+            if torch.allclose(mean, expected_mean, atol=1e-4):
+                print("SUCCESS: eval_pusht_gym is using ImageNet mean.")
+            else:
+                print("FAILURE: eval_pusht_gym is NOT using ImageNet mean.")
+        else:
+             print("FAILURE: observation.image not found in stats after setup_normalization.")
+
+    except Exception as e:
+        print(f"Error checking eval_pusht_gym: {e}")
 
 if __name__ == "__main__":
-    check_stats()
+    check_changes()
