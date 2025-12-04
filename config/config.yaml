@@ -1,0 +1,28 @@
+# Training
+batch_size: 64
+lr: 1e-4
+epochs: 500
+# device: "cuda" # Auto-detected if commented out
+seed: 42
+max_grad_norm: 1.0
+
+# Model
+action_dim: 2
+prop_dim: 2
+image_size: 96
+obs_dim: 512
+hidden_size: 512
+chunk_len: 16
+num_steps: 16
+num_heads: 8
+expansion: 4.0
+forward_dtype: "float32"
+n_obs_steps: 2
+
+# Evaluation & Logging
+eval_freq_steps: 1000
+eval_max_steps: 300
+eval_exec_steps: 8
+save_freq_steps: 5000
+project_name: "flowtrm-pusht"
+checkpoint_dir: "checkpoints/pusht"

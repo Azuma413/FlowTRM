@@ -5,6 +5,7 @@ import torch.nn.functional as F
 class IterativeRefinementModel(nn.Module):
     def __init__(self, action_dim, obs_dim, hidden_dim=256, chunk_size=16, train_noise_std=0.1):
         super().__init__()
+        self.action_dim = action_dim
         self.chunk_size = chunk_size
         self.train_noise_std = train_noise_std
 
@@ -69,9 +70,26 @@ class IterativeRefinementModel(nn.Module):
         
         total_loss = 0
         
-        # --- Step 0: 無からの生成 (またはランダムノイズからの生成) ---
-        # 学習時は「完全にランダムなノイズ」あるいは「ゼロ」からスタート
-        current_guess = torch.zeros_like(target_action) # 初期推測はゼロとする (MIP論文準拠) [cite: 441]
+        # --- 修正点: 初期推測の初期化戦略 ---
+        # 確率的に「Cold Start (ゼロ)」か「Warm Start (シフト済みGT + ノイズ)」を選ぶ
+        # これにより、推論時の両方のケースに対応できる
+        
+        # 例: 50%の確率でWarm Startシミュレーションを行う
+        if torch.rand(1).item() < 0.5:
+            # Cold Start: MIP論文通りゼロから 
+            current_guess = torch.zeros_like(target_action)
+        else:
+            # Warm Start Simulation: 
+            # 正解アクションを1つずらして、前回の推論結果を模倣する
+            # (端の処理は簡易的に0埋めや複製で)
+            shifted_action = target_action.clone()
+            shifted_action[:, :-1, :] = target_action[:, 1:, :] # 左シフト
+            shifted_action[:, -1, :] = target_action[:, -1, :] # 末尾複製
+            
+            # さらに強めのノイズを乗せて「不完全な前回予測」を作る
+            # ノイズレベルはtrain_noise_stdより少し大きくても良い
+            warm_noise = torch.randn_like(shifted_action) * self.train_noise_std
+            current_guess = shifted_action + warm_noise
         
         # 学習するRefinementステップ数 (例: 2ステップ)
         # 論文では2ステップで十分とされている [cite: 100]
@@ -106,7 +124,7 @@ class IterativeRefinementModel(nn.Module):
         # --- Warm Start Strategy ---
         if prev_action_chunk is None:
             # 初回はゼロからスタート
-            current_guess = torch.zeros((B, self.chunk_size, obs.shape[-1])).to(obs.device) # shape適当
+            current_guess = torch.zeros((B, self.chunk_size, self.action_dim)).to(obs.device)
         else:
             # 前回予測したチャンクを1つ左にシフトして、末尾をパディング
             # 例: [a1, a2, ..., a15, a16] -> [a2, ..., a16, a16]

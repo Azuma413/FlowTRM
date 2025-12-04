@@ -1,7 +1,23 @@
 import os
+import warnings
+import logging
+
+# Suppress specific warnings
+warnings.filterwarnings("ignore", message=".*pkg_resources is deprecated.*")
+warnings.filterwarnings("ignore", message=".*video decoding and encoding capabilities of torchvision are deprecated.*")
+
+# Suppress root logger warning about torchcodec
+class TorchCodecFilter(logging.Filter):
+    def filter(self, record):
+        return "'torchcodec' is not available" not in record.getMessage()
+
+logging.getLogger().addFilter(TorchCodecFilter())
+
 import random
 from dataclasses import dataclass, asdict
 from typing import Optional, Dict, Any, Tuple, List
+import argparse
+from omegaconf import OmegaConf
 
 import torch
 import torch.nn as nn
@@ -12,9 +28,9 @@ import gymnasium as gym
 import gym_pusht  # Register PushT environments
 import numpy as np
 
-from models.irm import IterativeRefinementModel
+from models.pusht_model import PushTModel
 from dataset.pusht_dataset import PushTDataset
-from eval_pusht_gym import run_eval_episode, get_stats
+from eval_pusht_gym import run_eval_episode, get_dataset_info, setup_normalization
 
 @dataclass
 class TrainConfig:
@@ -54,7 +70,7 @@ def set_seed(seed: int):
     if torch.cuda.is_available():
         torch.cuda.manual_seed_all(seed)
 
-def setup_training(config: TrainConfig) -> Tuple[PushT_RF_TRM, torch.optim.Optimizer, DataLoader, gym.Env]:
+def setup_training(config: TrainConfig) -> Tuple[PushTModel, torch.optim.Optimizer, DataLoader, gym.Env]:
     # Device
     print(f"Using device: {config.device}")
     
@@ -62,7 +78,7 @@ def setup_training(config: TrainConfig) -> Tuple[PushT_RF_TRM, torch.optim.Optim
     wandb.init(project=config.project_name, config=asdict(config))
     
     # Model
-    model = PushT_RF_TRM(asdict(config))
+    model = PushTModel(asdict(config))
     model.to(config.device)
     
     # Optimizer
@@ -91,14 +107,15 @@ def setup_training(config: TrainConfig) -> Tuple[PushT_RF_TRM, torch.optim.Optim
     return model, optimizer, train_loader, eval_env
 
 def train_epoch(
-    model: PushT_RF_TRM, 
+    model: PushTModel, 
     optimizer: torch.optim.Optimizer, 
     loader: DataLoader, 
     config: TrainConfig, 
     epoch: int, 
     global_step: int,
     eval_env: gym.Env,
-    stats: Dict[str, Any]
+    normalize: Any,
+    unnormalize: Any
 ) -> int:
     model.train()
     pbar = tqdm(loader, desc=f"Epoch {epoch+1}/{config.epochs}")
@@ -132,7 +149,7 @@ def train_epoch(
         
         # Evaluation
         if global_step % config.eval_freq_steps == 0 and global_step > 0:
-            evaluate(model, eval_env, stats, config, global_step)
+            evaluate(model, eval_env, normalize, unnormalize, config, global_step)
             model.train()
             
         # Checkpoint
@@ -148,9 +165,10 @@ def train_epoch(
     return global_step
 
 def evaluate(
-    model: PushT_RF_TRM, 
+    model: PushTModel, 
     env: gym.Env, 
-    stats: Dict[str, Any], 
+    normalize: Any,
+    unnormalize: Any,
     config: TrainConfig, 
     global_step: int
 ):
@@ -158,7 +176,7 @@ def evaluate(
     print(f"\nRunning evaluation at step {global_step}...")
     
     frames, timeout = run_eval_episode(
-        model, env, stats, config.device, 
+        model, env, normalize, unnormalize, config.device, 
         max_steps=config.eval_max_steps, 
         exec_steps=config.eval_exec_steps,
         n_obs_steps=config.n_obs_steps
@@ -173,7 +191,7 @@ def evaluate(
             "global_step": global_step
         })
 
-def save_checkpoint(model: PushT_RF_TRM, config: TrainConfig, global_step: Optional[int] = None):
+def save_checkpoint(model: PushTModel, config: TrainConfig, global_step: Optional[int] = None):
     os.makedirs(config.checkpoint_dir, exist_ok=True)
     if global_step is not None:
         save_path = os.path.join(config.checkpoint_dir, f"model_step_{global_step}.pth")
@@ -184,18 +202,39 @@ def save_checkpoint(model: PushT_RF_TRM, config: TrainConfig, global_step: Optio
     print(f"\nSaved checkpoint to {save_path}")
 
 def main():
-    config = TrainConfig()
+    parser = argparse.ArgumentParser(description="Train PushT Model")
+    parser.add_argument("--config", type=str, default="config/config.yaml", help="Path to configuration file")
+    args = parser.parse_args()
+
+    # Load default config from dataclass
+    base_config = OmegaConf.structured(TrainConfig)
+    
+    # Load config from file
+    if os.path.exists(args.config):
+        file_config = OmegaConf.load(args.config)
+        # Merge base config with file config
+        config_node = OmegaConf.merge(base_config, file_config)
+        # Convert back to TrainConfig object
+        config = OmegaConf.to_object(config_node)
+        print(f"Loaded config from {args.config}")
+    else:
+        print(f"Config file {args.config} not found. Using defaults.")
+        config = TrainConfig()
+
     set_seed(config.seed)
     
     model, optimizer, train_loader, eval_env = setup_training(config)
-    stats = get_stats()
+    
+    # Setup normalization for eval
+    stats, features = get_dataset_info()
+    normalize, unnormalize = setup_normalization(stats, features)
     
     global_step = 0
     
     try:
         for epoch in range(config.epochs):
             global_step = train_epoch(
-                model, optimizer, train_loader, config, epoch, global_step, eval_env, stats
+                model, optimizer, train_loader, config, epoch, global_step, eval_env, normalize, unnormalize
             )
             
         save_checkpoint(model, config)
