@@ -29,16 +29,20 @@ def setup_normalization(stats, features_dict):
         else:
             f_type = FeatureType.STATE
             
+        shape = ft["shape"]
+        if f_type == FeatureType.VISUAL and len(shape) == 3 and shape[-1] == 3:
+            shape = (shape[2], shape[0], shape[1])
+            
         features_map[key] = PolicyFeature(
             type=f_type,
-            shape=ft["shape"]
+            shape=shape
         )
 
     # Norm Map
     norm_map = {
-        "observation.image": NormalizationMode.MEAN_STD,
-        "observation.state": NormalizationMode.MIN_MAX,
-        "action": NormalizationMode.MIN_MAX
+        FeatureType.VISUAL: NormalizationMode.MEAN_STD,
+        FeatureType.STATE: NormalizationMode.MIN_MAX,
+        FeatureType.ACTION: NormalizationMode.MIN_MAX
     }
     
     # Prepare Stats
@@ -47,6 +51,13 @@ def setup_normalization(stats, features_dict):
     mean = torch.tensor([0.485, 0.456, 0.406]).view(3, 1, 1)
     std = torch.tensor([0.229, 0.224, 0.225]).view(3, 1, 1)
     stats["observation.image"] = {"mean": mean, "std": std}
+    
+    # Convert all stats to Tensors
+    for k, v in stats.items():
+        if isinstance(v, dict):
+            for sk, sv in v.items():
+                if isinstance(sv, np.ndarray):
+                    v[sk] = torch.from_numpy(sv)
         
     normalize = Normalize(
         features=features_map,
@@ -102,10 +113,48 @@ def run_eval_episode(model, env, normalize, unnormalize, device, max_steps=300, 
             "image": batch["observation.image"].unsqueeze(0),
             "agent_pos": batch["observation.state"].unsqueeze(0)
         }
+        # Warm Start Logic
+        initial_guess = None
+        if "prev_action_chunk" in locals() and prev_action_chunk is not None:
+            # Shift previous action chunk by exec_steps
+            # prev_action_chunk: (1, chunk_len, action_dim)
+            # We need to shift left by exec_steps and pad
+            
+            # Note: action_chunk is normalized.
+            # We assume the model expects normalized initial_guess.
+            
+            prev_chunk = prev_action_chunk.squeeze(0) # (chunk_len, action_dim)
+            chunk_len = prev_chunk.shape[0]
+            
+            if exec_steps < chunk_len:
+                new_guess = torch.zeros_like(prev_chunk)
+                new_guess[:-exec_steps] = prev_chunk[exec_steps:]
+                new_guess[-exec_steps:] = prev_chunk[-1] # Pad with last action
+                initial_guess = new_guess.unsqueeze(0) # (1, chunk_len, action_dim)
+            else:
+                # If exec_steps >= chunk_len, we can't really warm start meaningfully from this chunk alone
+                # But let's just replicate the last action
+                initial_guess = prev_chunk[-1].unsqueeze(0).repeat(chunk_len, 1).unsqueeze(0)
+        else:
+            # First step or no history: Use current agent_pos as initial guess
+            # agent_pos is (2,) numpy array
+            # We need to normalize it to use as initial guess for action.
+            # We treat it as an action for normalization purposes.
+            
+            pos_tensor = torch.from_numpy(agent_pos).float().to(device).unsqueeze(0) # (1, 2)
+            dummy_batch = {"action": pos_tensor}
+            normalize.to(device)
+            norm_batch = normalize(dummy_batch)
+            norm_pos = norm_batch["action"] # (1, 2)
+            
+            chunk_len = model.irm.chunk_size
+            initial_guess = norm_pos.unsqueeze(1).repeat(1, chunk_len, 1) # (1, chunk_len, 2)
+
         # Inference
         with torch.no_grad():
-            preds = model.predict(model_input)
+            preds = model.predict(model_input, initial_guess=initial_guess)
             action_chunk = preds["action"] # (1, chunk_len, 2)
+            prev_action_chunk = action_chunk.clone()
             
         # Execute chunk
         # Action chunk is normalized. We need to unnormalize.
@@ -134,7 +183,7 @@ def evaluate_gym():
     # Config
     config = {
         "device": "cuda" if torch.cuda.is_available() else "cpu",
-        "checkpoint_path": "checkpoints/pusht/model_final.pth", # Default to final
+        "checkpoint_path": "checkpoints/pusht/model_step_5050.pth", # Default to final
         "num_episodes": 1,
         "max_steps": 300,
         "chunk_len": 16,

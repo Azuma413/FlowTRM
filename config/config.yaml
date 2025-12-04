@@ -28,7 +28,7 @@ eval_interval: 1
 eval_unit: "epochs" # "epochs" or "steps"
 eval_max_steps: 300
 eval_exec_steps: 8
-save_interval: 50
+save_interval: 10
 save_unit: "epochs" # "epochs" or "steps"
 project_name: "flowtrm-pusht"
 checkpoint_dir: "checkpoints/pusht"

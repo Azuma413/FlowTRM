@@ -26,16 +26,20 @@ class PushTDataset(Dataset):
             else:
                 f_type = FeatureType.STATE
                 
+            shape = ft["shape"]
+            if f_type == FeatureType.VISUAL and len(shape) == 3 and shape[-1] == 3:
+                shape = (shape[2], shape[0], shape[1])
+                
             self.features_map[key] = PolicyFeature(
                 type=f_type,
-                shape=ft["shape"]
+                shape=shape
             )
 
         # Norm Map
         norm_map = {
-            "observation.image": NormalizationMode.MEAN_STD,
-            "observation.state": NormalizationMode.MIN_MAX,
-            "action": NormalizationMode.MIN_MAX
+            FeatureType.VISUAL: NormalizationMode.MEAN_STD,
+            FeatureType.STATE: NormalizationMode.MIN_MAX,
+            FeatureType.ACTION: NormalizationMode.MIN_MAX
         }
         
         # Prepare Stats
@@ -43,6 +47,14 @@ class PushTDataset(Dataset):
         mean = torch.tensor([0.485, 0.456, 0.406]).view(3, 1, 1)
         std = torch.tensor([0.229, 0.224, 0.225]).view(3, 1, 1)
         self.stats["observation.image"] = {"mean": mean, "std": std}
+        
+        # Convert all stats to Tensors (LeRobot stats are numpy)
+        import numpy as np
+        for k, v in self.stats.items():
+            if isinstance(v, dict):
+                for sk, sv in v.items():
+                    if isinstance(sv, np.ndarray):
+                        v[sk] = torch.from_numpy(sv)
             
         # Initialize Normalize
         self.normalize = Normalize(

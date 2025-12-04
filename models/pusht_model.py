@@ -78,7 +78,7 @@ class PushTModel(nn.Module):
         
         return self.irm.compute_loss(irm_batch), {}
 
-    def predict(self, batch):
+    def predict(self, batch, initial_guess=None):
         # batch['image']: (B, T, C, H, W)
         # batch['agent_pos']: (B, T, D)
         
@@ -97,6 +97,6 @@ class PushTModel(nn.Module):
         # The eval loop in eval_pusht_gym.py doesn't seem to pass prev_action.
         # So we just call it.
         
-        action = self.irm.predict_with_warm_start(obs, prev_action_chunk=None)
+        action = self.irm.predict_with_warm_start(obs, prev_action_chunk=None, initial_guess=initial_guess)
         
         return {"action": action}

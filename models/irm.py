@@ -99,14 +99,12 @@ class IterativeRefinementModel(nn.Module):
             # Loss計算 (各ステップでGTに近づくように監督する) [cite: 373]
             loss_k = F.mse_loss(refined_pred, target_action)
             total_loss += loss_k
-            
-            # 次のステップへの入力 (勾配は切るのが一般的だが、MIP的には切らなくても良い。ここでは安定のため切る)
-            current_guess = refined_pred.detach()
+            current_guess = self.forward_refine(obs_emb, current_guess, k)
             
         return total_loss
 
     @torch.no_grad()
-    def predict_with_warm_start(self, obs, prev_action_chunk=None):
+    def predict_with_warm_start(self, obs, prev_action_chunk=None, initial_guess=None):
         """
         推論時: 前のタイムステップの予測結果を初期値(Warm Start)として使う
         """
@@ -114,9 +112,10 @@ class IterativeRefinementModel(nn.Module):
         obs_emb = self.obs_encoder(obs)
         
         # --- Warm Start Strategy ---
-        if prev_action_chunk is None:
-            # 初回はゼロからスタート
-            current_guess = torch.zeros((B, self.chunk_size, self.action_dim)).to(obs.device)
+        if initial_guess is not None:
+            current_guess = initial_guess
+        elif prev_action_chunk is None:
+            current_guess = torch.ones((B, self.chunk_size, self.action_dim)).to(obs.device)*0.5
         else:
             # 前回予測したチャンクを1つ左にシフトして、末尾をパディング
             # 例: [a1, a2, ..., a15, a16] -> [a2, ..., a16, a16]
