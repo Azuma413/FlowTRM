@@ -78,7 +78,7 @@ class PushTModel(nn.Module):
         
         return self.irm.compute_loss(irm_batch), {}
 
-    def predict(self, batch, initial_guess=None):
+    def predict(self, batch, prev_action_chunk=None):
         # batch['image']: (B, T, C, H, W)
         # batch['agent_pos']: (B, T, D)
         
@@ -92,11 +92,6 @@ class PushTModel(nn.Module):
         img_emb = self.backbone(imgs).flatten(1)
         obs = torch.cat([img_emb, states], dim=-1)
         
-        # Warm start logic could be handled here if we track history, 
-        # but for now let's just call predict_with_warm_start with None or handle it in eval loop.
-        # The eval loop in eval_pusht_gym.py doesn't seem to pass prev_action.
-        # So we just call it.
-        
-        action = self.irm.predict_with_warm_start(obs, prev_action_chunk=None, initial_guess=initial_guess)
+        action = self.irm.predict_with_warm_start(obs, prev_action_chunk=prev_action_chunk)
         
         return {"action": action}

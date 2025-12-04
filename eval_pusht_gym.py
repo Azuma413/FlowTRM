@@ -114,33 +114,25 @@ def run_eval_episode(model, env, normalize, unnormalize, device, max_steps=300, 
             "agent_pos": batch["observation.state"].unsqueeze(0)
         }
         # Warm Start Logic
-        initial_guess = None
+        input_chunk = None
         if "prev_action_chunk" in locals() and prev_action_chunk is not None:
-            # Shift previous action chunk by exec_steps
-            # prev_action_chunk: (1, chunk_len, action_dim)
-            # We need to shift left by exec_steps and pad
-            
-            # Note: action_chunk is normalized.
-            # We assume the model expects normalized initial_guess.
+            # We need to provide a chunk that, when shifted by 1 in IRM, becomes the desired guess.
+            # Desired guess = prev_action_chunk shifted by exec_steps.
+            # So input_chunk = prev_action_chunk shifted by exec_steps - 1.
             
             prev_chunk = prev_action_chunk.squeeze(0) # (chunk_len, action_dim)
             chunk_len = prev_chunk.shape[0]
+            shift = exec_steps - 1
             
-            if exec_steps < chunk_len:
+            if shift < chunk_len:
                 new_guess = torch.zeros_like(prev_chunk)
-                new_guess[:-exec_steps] = prev_chunk[exec_steps:]
-                new_guess[-exec_steps:] = prev_chunk[-1] # Pad with last action
-                initial_guess = new_guess.unsqueeze(0) # (1, chunk_len, action_dim)
+                new_guess[:-shift] = prev_chunk[shift:]
+                new_guess[-shift:] = prev_chunk[-1] # Pad
+                input_chunk = new_guess.unsqueeze(0)
             else:
-                # If exec_steps >= chunk_len, we can't really warm start meaningfully from this chunk alone
-                # But let's just replicate the last action
-                initial_guess = prev_chunk[-1].unsqueeze(0).repeat(chunk_len, 1).unsqueeze(0)
+                input_chunk = prev_chunk[-1].unsqueeze(0).repeat(chunk_len, 1).unsqueeze(0)
         else:
-            # First step or no history: Use current agent_pos as initial guess
-            # agent_pos is (2,) numpy array
-            # We need to normalize it to use as initial guess for action.
-            # We treat it as an action for normalization purposes.
-            
+            # First step: Use agent_pos (normalized)
             pos_tensor = torch.from_numpy(agent_pos).float().to(device).unsqueeze(0) # (1, 2)
             dummy_batch = {"action": pos_tensor}
             normalize.to(device)
@@ -148,24 +140,24 @@ def run_eval_episode(model, env, normalize, unnormalize, device, max_steps=300, 
             norm_pos = norm_batch["action"] # (1, 2)
             
             chunk_len = model.irm.chunk_size
-            initial_guess = norm_pos.unsqueeze(1).repeat(1, chunk_len, 1) # (1, chunk_len, 2)
+            # We want initial guess to be constant agent_pos.
+            # IRM shifts by 1. Constant shifted by 1 is constant.
+            # So we can just pass constant.
+            input_chunk = norm_pos.unsqueeze(1).repeat(1, chunk_len, 1) # (1, chunk_len, 2)
 
         # Inference
         with torch.no_grad():
-            preds = model.predict(model_input, initial_guess=initial_guess)
+            preds = model.predict(model_input, prev_action_chunk=input_chunk)
             action_chunk = preds["action"] # (1, chunk_len, 2)
             prev_action_chunk = action_chunk.clone()
             
-        # Execute chunk
-        # Action chunk is normalized. We need to unnormalize.
-        # Unnormalize expects batch.
-        
-        # We can unnormalize the whole chunk.
         action_batch = {
             "action": action_chunk.squeeze(0) # (chunk_len, 2)
         }
+        
         unnormalize.to(device)
         action_batch = unnormalize(action_batch)
+        
         action_chunk_np = action_batch["action"].cpu().numpy()
         
         for k in range(exec_steps):
@@ -223,7 +215,16 @@ def evaluate_gym():
             if len(ckpts) > 0:
                 ckpts.sort(key=lambda x: int(x.split("_")[-1].split(".")[0]))
                 ckpt_path = os.path.join(ckpt_dir, ckpts[-1])
-                print(f"model_final.pth not found, using latest: {ckpt_path}")
+                print(f"Using latest checkpoint: {ckpt_path}")
+    
+    # Force latest if exists
+    ckpt_dir = os.path.dirname(config["checkpoint_path"])
+    if os.path.exists(ckpt_dir):
+         ckpts = [f for f in os.listdir(ckpt_dir) if f.endswith(".pth") and "model_step_" in f]
+         if len(ckpts) > 0:
+             ckpts.sort(key=lambda x: int(x.split("_")[-1].split(".")[0]))
+             ckpt_path = os.path.join(ckpt_dir, ckpts[-1])
+             print(f"Overriding with latest checkpoint: {ckpt_path}")
     
     if os.path.exists(ckpt_path):
         model.load_state_dict(torch.load(ckpt_path, map_location=device))
