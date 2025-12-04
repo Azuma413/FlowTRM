@@ -33,6 +33,10 @@ class TrainConfig:
     device: str = "cuda" if torch.cuda.is_available() else "cpu"
     seed: int = 42
     max_grad_norm: float = 1.0
+    num_workers: int = 8
+    persistent_workers: bool = True
+    pin_memory: bool = True
+    prefetch_factor: Optional[int] = 2
     # Model
     action_dim: int = 2
     prop_dim: int = 2
@@ -64,6 +68,8 @@ def set_seed(seed: int):
 
 def setup_training(config: TrainConfig) -> Tuple[PushTModel, torch.optim.Optimizer, DataLoader, gym.Env]:
     print(f"Using device: {config.device}")
+    if config.device == "cuda":
+        torch.backends.cudnn.benchmark = True
     wandb.init(project=config.project_name, config=asdict(config))
     model = PushTModel(asdict(config))
     model.to(config.device)
@@ -80,8 +86,10 @@ def setup_training(config: TrainConfig) -> Tuple[PushTModel, torch.optim.Optimiz
         train_dataset, 
         batch_size=config.batch_size, 
         shuffle=True,
-        num_workers=4,
-        pin_memory=True
+        num_workers=config.num_workers,
+        pin_memory=config.pin_memory,
+        persistent_workers=config.persistent_workers,
+        prefetch_factor=config.prefetch_factor if config.num_workers > 0 else None
     )
     eval_env = gym.make("gym_pusht/PushT-v0", obs_type="pixels_agent_pos", render_mode="rgb_array")
     return model, optimizer, train_loader, eval_env

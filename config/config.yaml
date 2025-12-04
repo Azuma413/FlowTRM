@@ -1,10 +1,14 @@
 # Training
-batch_size: 64
+batch_size: 256
 lr: 1e-4
 epochs: 500
 # device: "cuda" # Auto-detected if commented out
 seed: 42
 max_grad_norm: 1.0
+num_workers: 0
+persistent_workers: false
+pin_memory: true
+prefetch_factor: null
 
 # Model
 action_dim: 2

@@ -3,6 +3,7 @@ from torch.utils.data import Dataset
 from lerobot.datasets.lerobot_dataset import LeRobotDataset
 from lerobot.policies.normalize import Normalize, NormalizationMode
 from lerobot.configs.types import PolicyFeature, FeatureType
+from tqdm import tqdm
 
 class PushTDataset(Dataset):
     def __init__(self, root_dir: str, split: str = "train", image_size: int = 96, chunk_len: int = 16, action_dim: int = 2, n_obs_steps: int = 2):
@@ -51,6 +52,29 @@ class PushTDataset(Dataset):
             norm_map=norm_map,
             stats=self.stats
         )
+
+        # --- Cache Dataset in Memory ---
+        print("Caching dataset in memory... (This may take a moment)")
+        images = []
+        agent_poses = []
+        episode_indices = []
+        
+        for i in tqdm(range(len(self.dataset)), desc="Caching"):
+            item = self.dataset[i]
+            images.append(item["observation.image"].float() / 255.0)
+            agent_poses.append(item["observation.state"].float())
+            episode_indices.append(item["episode_index"])
+            
+        self.cached_images = torch.stack(images) # (N, C, H, W)
+        self.cached_agent_poses = torch.stack(agent_poses) # (N, D)
+        self.cached_episode_indices = torch.tensor(episode_indices) # (N,)
+        
+        # Cache Actions
+        # Accessing via hf_dataset is faster for bulk access
+        print("Caching actions...")
+        self.cached_actions = torch.stack([torch.as_tensor(a) for a in self.dataset.hf_dataset["action"]]) # (N, action_dim)
+        
+        print("Dataset cached successfully.")
         
     def __len__(self):
         return len(self.dataset)
@@ -58,55 +82,61 @@ class PushTDataset(Dataset):
     def __getitem__(self, idx: int):
         # Observation History
         start_obs_idx = idx - self.n_obs_steps + 1
-        indices = list(range(start_obs_idx, idx + 1))
-        current_episode = self.dataset[idx]["episode_index"]
+        indices = torch.arange(start_obs_idx, idx + 1)
         
-        # Refine indices
-        actual_indices = []
-        first_valid_idx = -1
+        # Handle out of bounds and episode boundaries efficiently
+        # We can use the cached episode indices
+        current_episode = self.cached_episode_indices[idx]
         
-        for i in indices:
-            if i >= 0 and self.dataset[i]["episode_index"] == current_episode:
-                actual_indices.append(i)
-                if first_valid_idx == -1:
-                    first_valid_idx = i
-            else:
-                actual_indices.append(-1)
-                
-        final_indices = [i if i != -1 else first_valid_idx for i in actual_indices]
+        # Clamp indices to be valid
+        indices = torch.clamp(indices, min=0, max=len(self) - 1)
         
-        # Fetch observations
-        images = []
-        agent_poses = []
+        # Check episode consistency
+        episode_indices = self.cached_episode_indices[indices]
+        mask = episode_indices == current_episode
         
-        for i in final_indices:
-            item = self.dataset[i]
-            images.append(item["observation.image"].float() / 255.0) 
-            agent_poses.append(item["observation.state"].float())
-            
-        # Stack -> (T, ...)
-        image_stack = torch.stack(images) # (n_obs_steps, C, H, W)
-        agent_pos_stack = torch.stack(agent_poses) # (n_obs_steps, D)
+        # If any index is from a different episode (or invalid before clamping), replace with the first valid index
+        # But for observation history, we usually pad with the first frame of the episode.
+        # Let's find the first valid index in the sequence that belongs to the current episode.
+        # Actually, since we are looking back, the 'valid' frames are those that match current_episode.
+        # If we cross boundary, we should repeat the first frame of the current episode.
+        
+        # Optimized logic:
+        # 1. Get the valid indices
+        valid_mask = episode_indices == current_episode
+        if not valid_mask.all():
+            # Find the first index that belongs to the current episode
+            first_valid_pos = torch.where(valid_mask)[0][0] # First True position
+            first_valid_idx = indices[first_valid_pos]
+            # Replace invalid indices with the first valid one
+            indices[~valid_mask] = first_valid_idx
+
+        # Fetch observations from cache
+        image_stack = self.cached_images[indices] # (n_obs_steps, C, H, W)
+        agent_pos_stack = self.cached_agent_poses[indices] # (n_obs_steps, D)
         
         # Action Chunking
         start_idx = idx
-        end_idx = min(idx + self.chunk_len, len(self.dataset))
+        end_idx = min(idx + self.chunk_len, len(self))
         
-        raw_actions = self.dataset.hf_dataset[start_idx : end_idx]["action"]
-        raw_actions = torch.stack([torch.as_tensor(a) for a in raw_actions])
+        raw_actions = self.cached_actions[start_idx : end_idx]
         
         # Handle Episode Boundaries for Actions
-        episode_indices = self.dataset.hf_dataset[start_idx : end_idx]["episode_index"]
-        episode_indices = torch.tensor(episode_indices)
+        # If we cross into the next episode, we should pad with the last action of the current episode
+        action_episode_indices = self.cached_episode_indices[start_idx : end_idx]
+        mask = action_episode_indices != current_episode
         
-        mask = episode_indices != current_episode
         if mask.any():
-            first_diff = mask.nonzero()
+            # Find where the next episode starts
+            first_diff = torch.where(mask)[0]
             if len(first_diff) > 0:
                 idx_diff = first_diff[0].item()
-                last_valid = raw_actions[idx_diff - 1] if idx_diff > 0 else torch.zeros(self.action_dim)
-                raw_actions[idx_diff:] = last_valid
+                # Repeat the last valid action
+                last_valid_action = raw_actions[idx_diff - 1] if idx_diff > 0 else torch.zeros(self.action_dim)
+                raw_actions = raw_actions.clone() # Avoid modifying cache
+                raw_actions[idx_diff:] = last_valid_action
                 
+        # Pad if length is less than chunk_len (end of dataset)
         if len(raw_actions) < self.chunk_len:
             pad_len = self.chunk_len - len(raw_actions)
             last_action = raw_actions[-1]
