@@ -12,7 +12,7 @@ import gymnasium as gym
 import gym_pusht  # Register PushT environments
 import numpy as np
 
-from models.recursive_reasoning.pusht_rf_trm import PushT_RF_TRM
+from models.irm import IterativeRefinementModel
 from dataset.pusht_dataset import PushTDataset
 from eval_pusht_gym import run_eval_episode, get_stats
 

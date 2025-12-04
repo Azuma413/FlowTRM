@@ -7,7 +7,7 @@ import os
 from collections import deque
 from tqdm import tqdm
 
-from models.recursive_reasoning.pusht_rf_trm import PushT_RF_TRM
+from models.irm import IterativeRefinementModel
 from lerobot.datasets.lerobot_dataset import LeRobotDataset
 
 def get_stats(dataset_name="lerobot/pusht"):
@@ -22,7 +22,7 @@ def normalize_image(image):
     
     # ImageNet Normalization
     from torchvision import transforms
-    normalize = transforms.Normalize(
+    normalize = transforms.Normalize( # こういうのはLeRobotのpreprocess使うべき
         mean=[0.485, 0.456, 0.406],
         std=[0.229, 0.224, 0.225]
     )
@@ -41,7 +41,7 @@ def normalize_state(state, stats):
         return 2 * (state - min_val) / (max_val - min_val) - 1
     return state
 
-def unnormalize_action(action, stats):
+def unnormalize_action(action, stats): # lerobotのpostprocess使うべき
     # action: (1, D) -> (D,)
     if "min" in stats and "max" in stats:
         min_val = torch.tensor(stats["min"]).float().to(action.device)
@@ -117,38 +117,6 @@ def run_eval_episode(model, env, stats, device, max_steps=300, exec_steps=8, n_o
             step += 1
             
             if done: break
-            
-            # Update history for next step within chunk?
-            # NO, we only update history when we run inference again.
-            # But wait, if we are doing Receding Horizon Control, we run inference every `exec_steps`.
-            # Between inference steps, the environment evolves.
-            # Ideally, we should update the history with the NEW observations obtained during execution?
-            # BUT, standard RHC usually just runs open-loop for `exec_steps`.
-            # However, for the NEXT inference, we need the LATEST observation history.
-            # So we need to capture observations during the execution loop if we want to be precise,
-            # OR we just capture the observation at the END of the execution loop (which becomes the start of next loop).
-            # The current structure `while` loop runs inference.
-            # Inside, we have `for` loop for execution.
-            # If we want to be correct, we should probably update the `obs` variable in the inner loop
-            # so that when we go back to top of `while`, `obs` is fresh.
-            # The inner loop does `obs, ... = env.step(...)`. So `obs` IS updated.
-            # But we are NOT adding these intermediate observations to the history buffer.
-            # This means when we exit the inner loop, we add the LATEST obs to the buffer.
-            # But we might have skipped `exec_steps` observations.
-            # If `n_obs_steps` is small (e.g. 2), and `exec_steps` is large (e.g. 8),
-            # we effectively have a gap in history.
-            # e.g. History: [t-8, t]
-            # This is actually fine and common in RHC. We just use the most recent observations available.
-            # BUT, we must ensure we push the *current* observation into history before inference.
-            # My logic above does:
-            # 1. Get `obs` (which is from end of previous chunk execution)
-            # 2. Add to history
-            # 3. Inference
-            # This seems correct. We just miss the intermediate frames in the history, which is expected for RHC with skip.
-            # Wait, if we want "smooth" history [t-1, t], we need to collect observations during the inner loop?
-            # If `n_obs_steps`=2 implies [t-1, t], but we stepped 8 times, then t-1 is actually t-1 (1 step ago), not 8 steps ago.
-            # So we SHOULD collect observations during the inner loop if we want true [t-1, t].
-            # Let's fix this.
             
     return frames, step >= max_steps # Return frames and whether it timed out (success metric depends on env)
 
